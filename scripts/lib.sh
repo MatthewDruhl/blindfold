@@ -11,9 +11,17 @@ MIN_REDACT_LENGTH=4
 _SV_BACKEND=""
 _SV_PROJECT_PATH=""
 _SV_SANDBOX_PROFILE=""
+_SV_PLATFORM=""
+
+get_platform() {
+  if [[ -z "$_SV_PLATFORM" ]]; then
+    _SV_PLATFORM="$(uname -s)"
+  fi
+  echo "$_SV_PLATFORM"
+}
 
 has_sandbox() {
-  case "$(uname -s)" in
+  case "$(get_platform)" in
     Darwin) command -v sandbox-exec &>/dev/null ;;
     Linux) command -v bwrap &>/dev/null ;;
     *) return 1 ;;
@@ -34,7 +42,7 @@ get_sandbox_profile() {
 run_sandboxed() {
   local profile
   profile=$(get_sandbox_profile)
-  if [[ "$(uname -s)" == "Darwin" && -f "$profile" ]]; then
+  if [[ "$(get_platform)" == "Darwin" && -f "$profile" ]] && command -v sandbox-exec &>/dev/null; then
     sandbox-exec -f "$profile" "$@"
   else
     "$@"
