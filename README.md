@@ -15,18 +15,71 @@ Blindfold sits between the LLM and your secrets. It works in four parts:
 
 ## Installation
 
-Inside Claude Code, run:
+`jq` is required on all platforms: `brew install jq` (macOS) or `apt install jq` (Linux).
+
+### Claude Code CLI
 
 ```
 /plugin marketplace add thesaadmirza/blindfold
 /plugin install blindfold@blindfold
 ```
 
-That's it. The plugin system handles downloading, hooks, and skill registration. The security hooks activate automatically when the plugin is enabled.
+Hooks register automatically. Restart the session after installing.
 
-`jq` is required (`brew install jq` / `apt install jq`).
+### Claude Code Desktop App (Mac / Windows)
 
-After installing, the registry file is created on first use. Just say "store my API key" and Blindfold takes over.
+1. Click the **+** button next to the prompt box
+2. Select **Plugins** > **Manage plugins** > **Marketplaces** tab
+3. Add `thesaadmirza/blindfold` as a marketplace
+4. Go to the **Plugins** tab and install **blindfold**
+
+### VS Code (Claude Code extension)
+
+Type `/plugins` in the Claude Code prompt box, then add the marketplace and install from there. Same steps as the CLI, just through the VS Code plugin dialog.
+
+### JetBrains (Claude Code extension)
+
+Type `/plugin marketplace add thesaadmirza/blindfold` in the Claude Code prompt inside JetBrains, then `/plugin install blindfold@blindfold`.
+
+### Manual install (any environment, no plugin system needed)
+
+If `/plugin` isn't available or you prefer to set things up by hand:
+
+```bash
+git clone https://github.com/thesaadmirza/blindfold.git ~/.claude/skills/blindfold
+chmod 700 ~/.claude/skills/blindfold/scripts/*.sh
+```
+
+The skill auto-discovers from `~/.claude/skills/`. For the security hooks (guard + redaction), add this to `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [{"type": "command", "command": "bash ~/.claude/skills/blindfold/scripts/secret-guard.sh", "timeout": 5}]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [{"type": "command", "command": "bash ~/.claude/skills/blindfold/scripts/secret-guard.sh", "timeout": 5}]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [{"type": "command", "command": "bash ~/.claude/skills/blindfold/scripts/secret-redact.sh", "timeout": 10}]
+      }
+    ]
+  }
+}
+```
+
+Merge with your existing `settings.json` if you have one (don't replace the whole file). Restart Claude Code after adding hooks.
+
+### After installing
+
+The registry file is created on first use. Just say "store my API key" and Blindfold takes over.
 
 ## How it works
 
