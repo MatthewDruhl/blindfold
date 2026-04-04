@@ -8,11 +8,10 @@ set -uo pipefail
 REGISTRY="$HOME/.claude/secrets-registry.json"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SANDBOX_PROFILE="${SCRIPT_DIR}/sandbox.sb"
-PLATFORM="$(uname -s)"
 
 INPUT=$(</dev/stdin)
 
-PARSED=$(echo "$INPUT" | jq -r '[.tool_name // "", .tool_input.command // .tool_input.file_path // ""] | @tsv' 2>/dev/null)
+PARSED=$(jq -r '[.tool_name // "", .tool_input.command // .tool_input.file_path // ""] | @tsv' <<< "$INPUT" 2>/dev/null)
 TOOL_NAME="${PARSED%%	*}"
 COMMAND="${PARSED#*	}"
 
@@ -26,16 +25,15 @@ deny() {
 }
 
 # --- .env file blocking (applies to both Bash and Read) ---
+# Single jq call: returns paths if any profiles exist, empty output if none
 if [[ -f "$REGISTRY" ]]; then
-  # Only parse env paths if profiles actually exist
-  HAS_PROFILES=$(jq '(.global.envProfiles | length) + ([.projects | to_entries[]? | .value.envProfiles | length] | add // 0) > 0' "$REGISTRY" 2>/dev/null)
-  if [[ "$HAS_PROFILES" == "true" ]]; then
-    ENV_PATHS=$(jq -r '
-      [.global.envProfiles | values // empty] +
-      [.projects | to_entries[]? | .value.envProfiles | values // empty]
-      | unique | .[]
-    ' "$REGISTRY" 2>/dev/null)
+  ENV_PATHS=$(jq -r '
+    [.global.envProfiles | values // empty] +
+    [.projects | to_entries[]? | .value.envProfiles | values // empty]
+    | unique | .[]
+  ' "$REGISTRY" 2>/dev/null)
 
+  if [[ -n "$ENV_PATHS" ]]; then
     while IFS= read -r env_path; do
       [[ -n "$env_path" ]] || continue
       [[ "$TOOL_NAME" == "Read" && "$COMMAND" == "$env_path" ]] && deny "Direct reading of registered .env file blocked."
@@ -47,25 +45,21 @@ fi
 # --- Sandbox wrapping (Bash only) ---
 [[ "$TOOL_NAME" == "Bash" ]] || exit 0
 
-# Exempt Blindfold's own scripts -- must be the START of the command (not a substring)
-# to prevent bypass via: echo secret-exec.sh && security dump-keychain
-EXEC_PATH="${SCRIPT_DIR}/secret-exec.sh"
-STORE_PATH="${SCRIPT_DIR}/secret-store.sh"
-LIST_PATH="${SCRIPT_DIR}/secret-list.sh"
-DELETE_PATH="${SCRIPT_DIR}/secret-delete.sh"
-ENVR_PATH="${SCRIPT_DIR}/env-register.sh"
-ENVK_PATH="${SCRIPT_DIR}/env-keys.sh"
-ENVU_PATH="${SCRIPT_DIR}/env-unregister.sh"
+# Exempt Blindfold's own scripts -- must match "bash /path/script.sh" or "/path/script.sh"
+# followed by a space, end-of-string, or semicolon (not a suffix like script.sh-evil)
+is_exempt() {
+  local cmd="$1" path="$2"
+  [[ "$cmd" == "bash ${path}" || "$cmd" == "bash ${path} "* ]] && return 0
+  [[ "$cmd" == "${path}" || "$cmd" == "${path} "* ]] && return 0
+  return 1
+}
 
-for exempt in "$EXEC_PATH" "$STORE_PATH" "$LIST_PATH" "$DELETE_PATH" "$ENVR_PATH" "$ENVK_PATH" "$ENVU_PATH"; do
-  # Match: "bash /full/path/to/script.sh" at the start of the command
-  [[ "$COMMAND" == "bash ${exempt}"* ]] && exit 0
-  [[ "$COMMAND" == "${exempt}"* ]] && exit 0
+for script in secret-exec.sh secret-store.sh secret-list.sh secret-delete.sh env-register.sh env-keys.sh env-unregister.sh; do
+  is_exempt "$COMMAND" "${SCRIPT_DIR}/${script}" && exit 0
 done
 
 # On macOS with Seatbelt: wrap the command in sandbox-exec
-if [[ "$PLATFORM" == "Darwin" && -f "$SANDBOX_PROFILE" ]] && command -v sandbox-exec &>/dev/null; then
-  # Escape single quotes using bash native (no sed fork)
+if [[ "$OSTYPE" == darwin* && -f "$SANDBOX_PROFILE" ]] && command -v sandbox-exec &>/dev/null; then
   ESCAPED_CMD="${COMMAND//\'/\'\\\'\'}"
   WRAPPED="sandbox-exec -f '${SANDBOX_PROFILE}' bash -c '${ESCAPED_CMD}'"
 
@@ -82,17 +76,14 @@ if [[ "$PLATFORM" == "Darwin" && -f "$SANDBOX_PROFILE" ]] && command -v sandbox-
 fi
 
 # --- Fallback: string matching for platforms without sandbox ---
-case "$PLATFORM" in
-  Darwin)
-    [[ "$COMMAND" == *"find-generic-password"*"-w"* ]] && deny "Keychain password read blocked."
-    [[ "$COMMAND" == *"find-generic-password"*"claude-secret"* ]] && deny "Keychain read of managed secret blocked."
-    [[ "$COMMAND" == *"dump-keychain"* ]] && deny "Keychain dump blocked."
-    [[ "$COMMAND" == *"claude-secrets"*"-w"* ]] && deny "Keychain read blocked."
-    ;;
-  Linux)
-    [[ "$COMMAND" == *"secret-tool"*"lookup"*"claude-secrets"* ]] && deny "secret-tool lookup blocked."
-    [[ "$COMMAND" == *".claude/vault/"*".gpg"* ]] && deny "GPG vault access blocked."
-    ;;
-esac
+if [[ "$OSTYPE" == darwin* ]]; then
+  [[ "$COMMAND" == *"find-generic-password"*"-w"* ]] && deny "Keychain password read blocked."
+  [[ "$COMMAND" == *"find-generic-password"*"claude-secret"* ]] && deny "Keychain read of managed secret blocked."
+  [[ "$COMMAND" == *"dump-keychain"* ]] && deny "Keychain dump blocked."
+  [[ "$COMMAND" == *"claude-secrets"*"-w"* ]] && deny "Keychain read blocked."
+elif [[ "$OSTYPE" == linux* ]]; then
+  [[ "$COMMAND" == *"secret-tool"*"lookup"*"claude-secrets"* ]] && deny "secret-tool lookup blocked."
+  [[ "$COMMAND" == *".claude/vault/"*".gpg"* ]] && deny "GPG vault access blocked."
+fi
 
 exit 0
