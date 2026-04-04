@@ -1,0 +1,15 @@
+{
+  "name": "blindfold",
+  "version": "1.0.0",
+  "description": "Blindfolds the LLM from your secrets. Stores API keys, tokens, and passwords in your OS keychain. Manages .env files by environment. The LLM only sees placeholder names — never actual values.",
+  "author": {
+    "name": "Saad Mirza",
+    "url": "https://github.com/thesaadmirza"
+  },
+  "homepage": "https://github.com/thesaadmirza/blindfold",
+  "repository": "https://github.com/thesaadmirza/blindfold",
+  "license": "MIT",
+  "keywords": ["secrets", "security", "keychain", "env", "vault", "credentials"],
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json"
+}

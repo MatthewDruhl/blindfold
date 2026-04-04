@@ -1,0 +1,19 @@
+{
+  "name": "blindfold",
+  "owner": {
+    "name": "Saad Mirza",
+    "email": "saadmirza009@gmail.com"
+  },
+  "metadata": {
+    "description": "Secret management for Claude Code. Blindfolds the LLM from your secrets."
+  },
+  "plugins": [
+    {
+      "name": "blindfold",
+      "source": "./",
+      "description": "Blindfolds the LLM from your secrets. Stores API keys, tokens, and passwords in your OS keychain. Manages .env files by environment.",
+      "category": "security",
+      "tags": ["secrets", "security", "keychain", "env", "vault"]
+    }
+  ]
+}

@@ -1,0 +1,298 @@
+#!/usr/bin/env bash
+# Shared functions for Blindfold scripts.
+# Source this file: source "$(dirname "$0")/lib.sh"
+
+REGISTRY="$HOME/.claude/secrets-registry.json"
+SERVICE="claude-secrets"
+ACCOUNT_PREFIX="claude-secret"
+MIN_REDACT_LENGTH=4
+
+# Cached values (computed once per script execution)
+_SV_BACKEND=""
+_SV_PROJECT_PATH=""
+
+check_dependencies() {
+  if ! command -v jq &>/dev/null; then
+    echo "ERROR: jq is required but not installed." >&2
+    echo "  macOS: brew install jq" >&2
+    echo "  Linux: sudo apt install jq / sudo yum install jq" >&2
+    exit 1
+  fi
+}
+
+detect_backend() {
+  if [[ -n "$_SV_BACKEND" ]]; then
+    echo "$_SV_BACKEND"
+    return
+  fi
+  case "$(uname -s)" in
+    Darwin) _SV_BACKEND="keychain" ;;
+    Linux)
+      if command -v secret-tool &>/dev/null; then _SV_BACKEND="secret-tool"
+      elif command -v gpg &>/dev/null; then _SV_BACKEND="gpg"
+      else _SV_BACKEND="none"; fi ;;
+    MINGW*|MSYS*|CYGWIN*) _SV_BACKEND="wincred" ;;
+    *) _SV_BACKEND="none" ;;
+  esac
+  echo "$_SV_BACKEND"
+}
+
+get_project_path() {
+  if [[ -n "$_SV_PROJECT_PATH" ]]; then
+    echo "$_SV_PROJECT_PATH"
+    return
+  fi
+  _SV_PROJECT_PATH=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+  echo "$_SV_PROJECT_PATH"
+}
+
+make_account_key() {
+  local scope="$1" name="$2"
+  echo "${ACCOUNT_PREFIX}:${scope}:${name}"
+}
+
+resolve_scope() {
+  local scope_arg="${1:-global}"
+  if [[ "$scope_arg" == "project" ]]; then
+    get_project_path
+  else
+    echo "global"
+  fi
+}
+
+resolve_env_profile() {
+  local profile="$1"
+  local proj
+  proj=$(get_project_path)
+  jq -r --arg prof "$profile" --arg proj "$proj" '
+    .projects[$proj].envProfiles[$prof] // .global.envProfiles[$prof] // empty
+  ' "$REGISTRY" 2>/dev/null
+}
+
+get_all_env_paths() {
+  jq -r '
+    [.global.envProfiles | values // empty] +
+    [.projects | to_entries[]? | .value.envProfiles | values // empty]
+    | unique | .[]
+  ' "$REGISTRY" 2>/dev/null
+}
+
+get_secret() {
+  local account="$1"
+  local backend
+  backend=$(detect_backend)
+
+  case "$backend" in
+    keychain)
+      security find-generic-password -a "$account" -s "$SERVICE" -w 2>/dev/null
+      ;;
+    secret-tool)
+      secret-tool lookup service "$SERVICE" account "$account" 2>/dev/null
+      ;;
+    gpg)
+      local gpg_file="$HOME/.claude/vault/$(echo "$account" | tr '/:' '__').gpg"
+      [[ -f "$gpg_file" ]] && gpg --batch --yes -d "$gpg_file" 2>/dev/null
+      ;;
+    wincred)
+      powershell.exe -NoProfile -Command "
+        \$cred = Get-StoredCredential -Target '${account}' 2>\$null
+        if (\$cred) { \$cred.GetNetworkCredential().Password }
+      " 2>/dev/null | tr -d '\r'
+      ;;
+    none)
+      echo "ERROR: No secret backend available. Install one of: secret-tool, gpg" >&2
+      return 1
+      ;;
+    *) echo "" ;;
+  esac
+}
+
+store_secret() {
+  local account="$1" value="$2"
+  local backend
+  backend=$(detect_backend)
+
+  case "$backend" in
+    keychain)
+      # Note: -w passes the value as a CLI arg, briefly visible in ps. macOS security
+      # command does not support stdin for -w. The exposure window is very short.
+      security add-generic-password -a "$account" -s "$SERVICE" -U -w "$value" 2>/dev/null ||
+      security add-generic-password -a "$account" -s "$SERVICE" -w "$value" 2>/dev/null
+      ;;
+    secret-tool)
+      echo -n "$value" | secret-tool store --label="$account" service "$SERVICE" account "$account" 2>/dev/null
+      ;;
+    gpg)
+      local vault_dir="$HOME/.claude/vault"
+      mkdir -p "$vault_dir" && chmod 700 "$vault_dir"
+      echo -n "$value" | gpg --batch --yes --symmetric --cipher-algo AES256 \
+        -o "$vault_dir/$(echo "$account" | tr '/:' '__').gpg" 2>/dev/null
+      ;;
+    wincred)
+      cmdkey "/add:${account}" "/user:${SERVICE}" "/pass:${value}" >/dev/null 2>&1
+      ;;
+    none)
+      echo "ERROR: No secret backend available. Cannot store secret." >&2
+      echo "Install one of: secret-tool (Linux), gpg" >&2
+      return 1
+      ;;
+  esac
+}
+
+delete_secret() {
+  local account="$1"
+  local backend
+  backend=$(detect_backend)
+
+  case "$backend" in
+    keychain) security delete-generic-password -a "$account" -s "$SERVICE" >/dev/null 2>&1 || true ;;
+    secret-tool) secret-tool clear service "$SERVICE" account "$account" 2>/dev/null || true ;;
+    gpg) rm -f "$HOME/.claude/vault/$(echo "$account" | tr '/:' '__').gpg" 2>/dev/null || true ;;
+    wincred) cmdkey "/delete:${account}" >/dev/null 2>&1 || true ;;
+  esac
+}
+
+secret_exists() {
+  local account="$1"
+  local backend
+  backend=$(detect_backend)
+
+  case "$backend" in
+    keychain) security find-generic-password -a "$account" -s "$SERVICE" >/dev/null 2>&1 ;;
+    secret-tool) secret-tool lookup service "$SERVICE" account "$account" >/dev/null 2>&1 ;;
+    gpg) [[ -f "$HOME/.claude/vault/$(echo "$account" | tr '/:' '__').gpg" ]] ;;
+    wincred) cmdkey "/list:${account}" >/dev/null 2>&1 ;;
+    *) return 1 ;;
+  esac
+}
+
+has_gui() {
+  case "$(uname -s)" in
+    Darwin) [[ -n "${DISPLAY:-}" ]] || system_profiler SPDisplaysDataType &>/dev/null ;;
+    Linux) [[ -n "${DISPLAY:-}" || -n "${WAYLAND_DISPLAY:-}" ]] ;;
+    *) return 1 ;;
+  esac
+}
+
+prompt_terminal() {
+  local safe_name="$1"
+  if [[ -t 0 ]] || [[ -e /dev/tty ]]; then
+    read -rsp "Enter value for ${safe_name}: " value </dev/tty
+    echo >&2
+    echo "$value"
+  else
+    echo "ERROR: No GUI or terminal available for secure input." >&2
+    echo "Store the secret manually. Run:" >&2
+    echo "  bash ${CLAUDE_SKILL_DIR:-~/.claude/skills/blindfold}/scripts/secret-store.sh --scope global ${safe_name}" >&2
+    return 1
+  fi
+}
+
+prompt_secret_dialog() {
+  local name="$1"
+  local backend
+  backend=$(detect_backend)
+
+  local safe_name="${name//[^A-Za-z0-9_]/}"
+
+  # If no GUI is available (SSH, Remote Control, headless), always use terminal prompt
+  if ! has_gui; then
+    prompt_terminal "$safe_name"
+    return
+  fi
+
+  case "$backend" in
+    keychain)
+      osascript -e "
+        set dialogResult to display dialog \"Enter value for ${safe_name}:\" default answer \"\" with hidden answer with title \"Blindfold\" with icon caution buttons {\"Cancel\", \"Store\"} default button \"Store\"
+        return text returned of dialogResult
+      " 2>/dev/null || prompt_terminal "$safe_name"
+      ;;
+    secret-tool)
+      if command -v zenity &>/dev/null; then
+        zenity --password --title="Blindfold" --text="Enter value for ${safe_name}:" 2>/dev/null || prompt_terminal "$safe_name"
+      elif command -v kdialog &>/dev/null; then
+        kdialog --password "Enter value for ${safe_name}:" --title "Blindfold" 2>/dev/null || prompt_terminal "$safe_name"
+      else
+        prompt_terminal "$safe_name"
+      fi
+      ;;
+    gpg|none)
+      prompt_terminal "$safe_name"
+      ;;
+    wincred)
+      powershell.exe -Command "
+        \$cred = Get-Credential -Message 'Enter value for ${safe_name}' -UserName '${safe_name}'
+        \$cred.GetNetworkCredential().Password
+      " 2>/dev/null | tr -d '\r' || prompt_terminal "$safe_name"
+      ;;
+  esac
+}
+
+ensure_registry() {
+  if [[ ! -f "$REGISTRY" ]]; then
+    echo '{"version":2,"global":{"secrets":[],"envProfiles":{}},"projects":{}}' > "$REGISTRY"
+    chmod 600 "$REGISTRY"
+  fi
+}
+
+# Atomic registry update: write to temp, validate, then mv
+update_registry() {
+  local jq_filter="$1"
+  local tmp
+  tmp=$(mktemp "${REGISTRY}.XXXXXX")
+  if jq "$jq_filter" "$REGISTRY" > "$tmp" 2>/dev/null && jq empty "$tmp" 2>/dev/null; then
+    mv "$tmp" "$REGISTRY"
+  else
+    rm -f "$tmp"
+    echo "ERROR: Registry update failed. File unchanged." >&2
+    return 1
+  fi
+}
+
+add_to_registry() {
+  local scope="$1" name="$2"
+  ensure_registry
+
+  if [[ "$scope" == "global" ]]; then
+    update_registry "$(printf '.global.secrets |= if index("%s") then . else . + ["%s"] end' "$name" "$name")"
+  else
+    update_registry "$(printf 'if .projects["%s"] == null then .projects["%s"] = {"secrets": ["%s"], "envProfiles": {}} elif (.projects["%s"].secrets | index("%s")) then . else .projects["%s"].secrets += ["%s"] end' "$scope" "$scope" "$name" "$scope" "$name" "$scope" "$name")"
+  fi
+}
+
+parse_scope_arg() {
+  local arg="${1:-global}"
+  if [[ "$arg" == "project" ]]; then
+    get_project_path
+  else
+    echo "global"
+  fi
+}
+
+# Create a temp file with secure permissions
+secure_mktemp() {
+  local tmp
+  tmp=$(mktemp)
+  chmod 600 "$tmp"
+  echo "$tmp"
+}
+
+env_key_count() {
+  local filepath="$1"
+  grep -cE '^[A-Za-z_][A-Za-z0-9_]*=' "$filepath" 2>/dev/null || echo "0"
+}
+
+env_key_names() {
+  local filepath="$1"
+  grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$filepath" 2>/dev/null | cut -d'=' -f1 | sort
+}
+
+parse_env_line() {
+  local line="$1"
+  local key="${line%%=*}"
+  local val="${line#*=}"
+  val="${val#\"}" ; val="${val%\"}"
+  val="${val#\'}" ; val="${val%\'}"
+  printf '%s\t%s\n' "$key" "$val"
+}
