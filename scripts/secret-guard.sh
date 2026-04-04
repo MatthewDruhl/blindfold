@@ -8,8 +8,9 @@ set -uo pipefail
 REGISTRY="$HOME/.claude/secrets-registry.json"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SANDBOX_PROFILE="${SCRIPT_DIR}/sandbox.sb"
+PLATFORM="$(uname -s)"
 
-INPUT=$(cat)
+INPUT=$(</dev/stdin)
 
 PARSED=$(echo "$INPUT" | jq -r '[.tool_name // "", .tool_input.command // .tool_input.file_path // ""] | @tsv' 2>/dev/null)
 TOOL_NAME="${PARSED%%	*}"
@@ -26,34 +27,48 @@ deny() {
 
 # --- .env file blocking (applies to both Bash and Read) ---
 if [[ -f "$REGISTRY" ]]; then
-  ENV_PATHS=$(jq -r '
-    [.global.envProfiles | values // empty] +
-    [.projects | to_entries[]? | .value.envProfiles | values // empty]
-    | unique | .[]
-  ' "$REGISTRY" 2>/dev/null)
+  # Only parse env paths if profiles actually exist
+  HAS_PROFILES=$(jq '(.global.envProfiles | length) + ([.projects | to_entries[]? | .value.envProfiles | length] | add // 0) > 0' "$REGISTRY" 2>/dev/null)
+  if [[ "$HAS_PROFILES" == "true" ]]; then
+    ENV_PATHS=$(jq -r '
+      [.global.envProfiles | values // empty] +
+      [.projects | to_entries[]? | .value.envProfiles | values // empty]
+      | unique | .[]
+    ' "$REGISTRY" 2>/dev/null)
 
-  while IFS= read -r env_path; do
-    [[ -n "$env_path" ]] || continue
-    [[ "$TOOL_NAME" == "Read" && "$COMMAND" == "$env_path" ]] && deny "Direct reading of registered .env file blocked."
-    [[ "$TOOL_NAME" == "Bash" && "$COMMAND" == *"$env_path"* ]] && deny "Access to registered .env file blocked."
-  done <<< "$ENV_PATHS"
+    while IFS= read -r env_path; do
+      [[ -n "$env_path" ]] || continue
+      [[ "$TOOL_NAME" == "Read" && "$COMMAND" == "$env_path" ]] && deny "Direct reading of registered .env file blocked."
+      [[ "$TOOL_NAME" == "Bash" && "$COMMAND" == *"$env_path"* ]] && deny "Access to registered .env file blocked."
+    done <<< "$ENV_PATHS"
+  fi
 fi
 
-# --- Sandbox wrapping (Bash only, macOS only) ---
+# --- Sandbox wrapping (Bash only) ---
 [[ "$TOOL_NAME" == "Bash" ]] || exit 0
 
-# Exempt secret-exec.sh -- it needs unsandboxed keychain access
-[[ "$COMMAND" == *"secret-exec.sh"* ]] && exit 0
-# Exempt secret-store.sh -- it needs unsandboxed keychain access for storing
-[[ "$COMMAND" == *"secret-store.sh"* ]] && exit 0
+# Exempt Blindfold's own scripts -- must be the START of the command (not a substring)
+# to prevent bypass via: echo secret-exec.sh && security dump-keychain
+EXEC_PATH="${SCRIPT_DIR}/secret-exec.sh"
+STORE_PATH="${SCRIPT_DIR}/secret-store.sh"
+LIST_PATH="${SCRIPT_DIR}/secret-list.sh"
+DELETE_PATH="${SCRIPT_DIR}/secret-delete.sh"
+ENVR_PATH="${SCRIPT_DIR}/env-register.sh"
+ENVK_PATH="${SCRIPT_DIR}/env-keys.sh"
+ENVU_PATH="${SCRIPT_DIR}/env-unregister.sh"
+
+for exempt in "$EXEC_PATH" "$STORE_PATH" "$LIST_PATH" "$DELETE_PATH" "$ENVR_PATH" "$ENVK_PATH" "$ENVU_PATH"; do
+  # Match: "bash /full/path/to/script.sh" at the start of the command
+  [[ "$COMMAND" == "bash ${exempt}"* ]] && exit 0
+  [[ "$COMMAND" == "${exempt}"* ]] && exit 0
+done
 
 # On macOS with Seatbelt: wrap the command in sandbox-exec
-if [[ "$(uname -s)" == "Darwin" && -f "$SANDBOX_PROFILE" ]]; then
-  # Escape the command for embedding in bash -c
-  ESCAPED_CMD=$(printf '%s' "$COMMAND" | sed "s/'/'\\\\''/g")
+if [[ "$PLATFORM" == "Darwin" && -f "$SANDBOX_PROFILE" ]] && command -v sandbox-exec &>/dev/null; then
+  # Escape single quotes using bash native (no sed fork)
+  ESCAPED_CMD="${COMMAND//\'/\'\\\'\'}"
   WRAPPED="sandbox-exec -f '${SANDBOX_PROFILE}' bash -c '${ESCAPED_CMD}'"
 
-  # Output updatedInput to replace the command with the sandboxed version
   jq -n --arg cmd "$WRAPPED" '{
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
@@ -67,9 +82,8 @@ if [[ "$(uname -s)" == "Darwin" && -f "$SANDBOX_PROFILE" ]]; then
 fi
 
 # --- Fallback: string matching for platforms without sandbox ---
-case "$(uname -s)" in
+case "$PLATFORM" in
   Darwin)
-    # Sandbox should have handled this, but just in case
     [[ "$COMMAND" == *"find-generic-password"*"-w"* ]] && deny "Keychain password read blocked."
     [[ "$COMMAND" == *"find-generic-password"*"claude-secret"* ]] && deny "Keychain read of managed secret blocked."
     [[ "$COMMAND" == *"dump-keychain"* ]] && deny "Keychain dump blocked."
