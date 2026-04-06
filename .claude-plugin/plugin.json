@@ -1,7 +1,7 @@
 {
   "name": "blindfold",
   "version": "1.0.0",
-  "description": "Blindfolds the LLM from your secrets. Stores API keys, tokens, and passwords in your OS keychain. Manages .env files by environment. The LLM only sees placeholder names — never actual values.",
+  "description": "Blindfolds the LLM from your secrets. Stores API keys, tokens, and passwords in your OS keychain. The LLM works with placeholders, never sees actual values. Kernel-level sandbox enforcement on macOS.",
   "author": {
     "name": "Saad Mirza",
     "url": "https://github.com/thesaadmirza"

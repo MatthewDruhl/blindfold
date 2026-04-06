@@ -3,14 +3,11 @@ set -uo pipefail
 source "$(dirname "$0")/lib.sh"
 check_dependencies
 
-ENV_PROFILE=""
 COMMAND=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --env) [[ $# -ge 2 ]] || { echo "ERROR: --env requires a profile name" >&2; exit 1; }
-           ENV_PROFILE="$2"; shift 2 ;;
-    -h|--help) echo "Usage: secret-exec.sh [--env <profile>] '<command>'"; exit 1 ;;
+    -h|--help) echo "Usage: secret-exec.sh '<command with {{PLACEHOLDERS}}>'"; exit 1 ;;
     *) COMMAND="$1"; shift ;;
   esac
 done
@@ -50,22 +47,6 @@ while IFS= read -r placeholder; do
   RESOLVED_CMD="${RESOLVED_CMD//"{{${name}}}"/"\${__SV_${name}}"}"
 done <<< "$PLACEHOLDERS"
 
-# Load env profile
-if [[ -n "$ENV_PROFILE" ]]; then
-  ENV_PATH=$(resolve_env_profile "$ENV_PROFILE")
-  [[ -n "$ENV_PATH" ]] || { echo "ERROR: Env profile '${ENV_PROFILE}' not found." >&2; exit 1; }
-  [[ -f "$ENV_PATH" ]] || { echo "ERROR: Env file missing: ${ENV_PATH}" >&2; exit 1; }
-
-  grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$ENV_PATH" 2>/dev/null | while IFS= read -r line; do
-    key="${line%%=*}"
-    val="${line#*=}"
-    val="${val#\"}" ; val="${val%\"}"
-    val="${val#\'}" ; val="${val%\'}"
-    printf 'ENV:%s\t%s\n' "$key" "$val" >> "$REDACT_FILE"
-    printf 'export %s=%q\n' "$key" "$val" >> "$EXEC_SCRIPT"
-  done
-fi
-
 echo "$RESOLVED_CMD" >> "$EXEC_SCRIPT"
 
 # Execute (sandboxed on macOS to prevent the inner command from reaching the keychain)
@@ -73,7 +54,7 @@ run_sandboxed bash "$EXEC_SCRIPT" > "$STDOUT_TMP" 2> "$STDERR_TMP"
 CMD_EXIT=$?
 rm -f "$EXEC_SCRIPT"
 
-# Build single-pass redaction: export secrets as env vars, awk reads them via ENVIRON
+# Single-pass redaction via ENVIRON
 REDACT_COUNT=0
 while IFS=$'\t' read -r label value; do
   [[ -n "$value" && ${#value} -ge $MIN_REDACT_LENGTH ]] || continue
@@ -87,7 +68,6 @@ if [[ $REDACT_COUNT -gt 0 ]]; then
   for f in "$STDOUT_TMP" "$STDERR_TMP"; do
     awk -v n="$REDACT_COUNT" "$AWK_SCRIPT" "$f" > "${f}.redacted" && mv "${f}.redacted" "$f"
   done
-  # Clean up env vars
   for ((i=0; i<REDACT_COUNT; i++)); do unset "__REDACT_F_${i}" "__REDACT_R_${i}"; done
 fi
 

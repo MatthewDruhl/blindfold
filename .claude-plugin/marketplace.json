@@ -11,7 +11,7 @@
     {
       "name": "blindfold",
       "source": "./",
-      "description": "Blindfolds the LLM from your secrets. Stores API keys, tokens, and passwords in your OS keychain. Manages .env files by environment.",
+      "description": "Blindfolds the LLM from your secrets. Stores API keys, tokens, and passwords in your OS keychain with kernel-level sandbox enforcement.",
       "category": "security",
       "tags": ["secrets", "security", "keychain", "env", "vault"]
     }

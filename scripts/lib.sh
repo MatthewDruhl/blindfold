@@ -98,22 +98,6 @@ resolve_scope() {
   fi
 }
 
-resolve_env_profile() {
-  local profile="$1"
-  local proj
-  proj=$(get_project_path)
-  jq -r --arg prof "$profile" --arg proj "$proj" '
-    .projects[$proj].envProfiles[$prof] // .global.envProfiles[$prof] // empty
-  ' "$REGISTRY" 2>/dev/null
-}
-
-get_all_env_paths() {
-  jq -r '
-    [.global.envProfiles | values // empty] +
-    [.projects | to_entries[]? | .value.envProfiles | values // empty]
-    | unique | .[]
-  ' "$REGISTRY" 2>/dev/null
-}
 
 get_secret() {
   local account="$1"
@@ -269,7 +253,7 @@ prompt_secret_dialog() {
 
 ensure_registry() {
   if [[ ! -f "$REGISTRY" ]]; then
-    echo '{"version":2,"global":{"secrets":[],"envProfiles":{}},"projects":{}}' > "$REGISTRY"
+    echo '{"version":3,"global":{"secrets":[]},"projects":{}}' > "$REGISTRY"
     chmod 600 "$REGISTRY"
   fi
 }
@@ -295,7 +279,7 @@ add_to_registry() {
   if [[ "$scope" == "global" ]]; then
     update_registry "$(printf '.global.secrets |= if index("%s") then . else . + ["%s"] end' "$name" "$name")"
   else
-    update_registry "$(printf 'if .projects["%s"] == null then .projects["%s"] = {"secrets": ["%s"], "envProfiles": {}} elif (.projects["%s"].secrets | index("%s")) then . else .projects["%s"].secrets += ["%s"] end' "$scope" "$scope" "$name" "$scope" "$name" "$scope" "$name")"
+    update_registry "$(printf 'if .projects["%s"] == null then .projects["%s"] = {"secrets": ["%s"]} elif (.projects["%s"].secrets | index("%s")) then . else .projects["%s"].secrets += ["%s"] end' "$scope" "$scope" "$name" "$scope" "$name" "$scope" "$name")"
   fi
 }
 
@@ -316,21 +300,3 @@ secure_mktemp() {
   echo "$tmp"
 }
 
-env_key_count() {
-  local filepath="$1"
-  grep -cE '^[A-Za-z_][A-Za-z0-9_]*=' "$filepath" 2>/dev/null || echo "0"
-}
-
-env_key_names() {
-  local filepath="$1"
-  grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$filepath" 2>/dev/null | cut -d'=' -f1 | sort
-}
-
-parse_env_line() {
-  local line="$1"
-  local key="${line%%=*}"
-  local val="${line#*=}"
-  val="${val#\"}" ; val="${val%\"}"
-  val="${val#\'}" ; val="${val%\'}"
-  printf '%s\t%s\n' "$key" "$val"
-}

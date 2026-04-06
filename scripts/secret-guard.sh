@@ -1,21 +1,19 @@
 #!/usr/bin/env bash
-# PreToolUse hook: enforces kernel-level sandbox on Bash commands (macOS Seatbelt)
-# and blocks direct reads of registered .env files.
+# PreToolUse hook: enforces kernel-level sandbox on Bash commands (macOS Seatbelt).
 # Exit 0 with JSON = allow (possibly with modified command)
 # Exit 2 = deny
 set -uo pipefail
 
-REGISTRY="$HOME/.claude/secrets-registry.json"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SANDBOX_PROFILE="${SCRIPT_DIR}/sandbox.sb"
 
 INPUT=$(</dev/stdin)
 
-PARSED=$(jq -r '[.tool_name // "", .tool_input.command // .tool_input.file_path // ""] | @tsv' <<< "$INPUT" 2>/dev/null)
+PARSED=$(jq -r '[.tool_name // "", .tool_input.command // ""] | @tsv' <<< "$INPUT" 2>/dev/null)
 TOOL_NAME="${PARSED%%	*}"
 COMMAND="${PARSED#*	}"
 
-[[ "$TOOL_NAME" == "Bash" || "$TOOL_NAME" == "Read" ]] || exit 0
+[[ "$TOOL_NAME" == "Bash" ]] || exit 0
 [[ -n "$COMMAND" ]] || exit 0
 
 deny() {
@@ -24,29 +22,7 @@ deny() {
   exit 2
 }
 
-# --- .env file blocking (applies to both Bash and Read) ---
-# jq filter duplicated from lib.sh:get_all_env_paths -- intentional to avoid sourcing lib.sh on hot path
-if [[ -f "$REGISTRY" ]]; then
-  ENV_PATHS=$(jq -r '
-    [.global.envProfiles | values // empty] +
-    [.projects | to_entries[]? | .value.envProfiles | values // empty]
-    | unique | .[]
-  ' "$REGISTRY" 2>/dev/null)
-
-  if [[ -n "$ENV_PATHS" ]]; then
-    while IFS= read -r env_path; do
-      [[ -n "$env_path" ]] || continue
-      [[ "$TOOL_NAME" == "Read" && "$COMMAND" == "$env_path" ]] && deny "Direct reading of registered .env file blocked."
-      [[ "$TOOL_NAME" == "Bash" && "$COMMAND" == *"$env_path"* ]] && deny "Access to registered .env file blocked."
-    done <<< "$ENV_PATHS"
-  fi
-fi
-
-# --- Sandbox wrapping (Bash only) ---
-[[ "$TOOL_NAME" == "Bash" ]] || exit 0
-
-# Exempt Blindfold's own scripts -- must match "bash /path/script.sh" or "/path/script.sh"
-# followed by a space, end-of-string, or semicolon (not a suffix like script.sh-evil)
+# Exempt Blindfold's own scripts -- must match at start, followed by space or end-of-string
 is_exempt() {
   local cmd="$1" path="$2"
   [[ "$cmd" == "bash ${path}" || "$cmd" == "bash ${path} "* ]] && return 0
@@ -54,7 +30,7 @@ is_exempt() {
   return 1
 }
 
-for script in secret-exec.sh secret-store.sh secret-list.sh secret-delete.sh env-register.sh env-keys.sh env-unregister.sh; do
+for script in secret-exec.sh secret-store.sh secret-list.sh secret-delete.sh; do
   is_exempt "$COMMAND" "${SCRIPT_DIR}/${script}" && exit 0
 done
 
@@ -75,7 +51,7 @@ if [[ "$OSTYPE" == darwin* && -f "$SANDBOX_PROFILE" ]] && command -v sandbox-exe
   exit 0
 fi
 
-# --- Fallback: string matching for platforms without sandbox ---
+# Fallback: string matching for platforms without sandbox
 if [[ "$OSTYPE" == darwin* ]]; then
   [[ "$COMMAND" == *"find-generic-password"*"-w"* ]] && deny "Keychain password read blocked."
   [[ "$COMMAND" == *"find-generic-password"*"claude-secret"* ]] && deny "Keychain read of managed secret blocked."
