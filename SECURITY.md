@@ -150,5 +150,4 @@ If you discover a security vulnerability in Blindfold:
 2. Email the maintainer with a description of the vulnerability, steps to reproduce, and potential impact.
 3. Allow 90 days for a fix before public disclosure.
 
-For the upstream project: contact [thesaadmirza](https://github.com/thesaadmirza) via GitHub.
-For this fork: contact [MatthewDruhl](https://github.com/MatthewDruhl) via GitHub.
+Contact [thesaadmirza](https://github.com/thesaadmirza) via GitHub.
