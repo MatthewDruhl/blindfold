@@ -43,14 +43,52 @@ def temp_registry(tmp_path):
 
 
 @pytest.fixture()
-def env_with_registry(temp_registry):
-    """Environment dict with BLINDFOLD_REGISTRY pointing to temp file.
+def temp_keychain(tmp_path):
+    """Create a temporary macOS Keychain for test isolation.
 
-    This keeps tests isolated from the user's real registry at
-    ~/.claude/secrets-registry.json.
+    Only created on macOS. On other platforms, yields None.
+    Cleaned up after the test.
+    """
+    if platform.system() != "Darwin":
+        yield None
+        return
+
+    keychain_path = tmp_path / "blindfold-test.keychain-db"
+    subprocess.run(
+        ["security", "create-keychain", "-p", "", str(keychain_path)],
+        capture_output=True,
+    )
+    # Unlock the keychain (required for add/find operations)
+    subprocess.run(
+        ["security", "unlock-keychain", "-p", "", str(keychain_path)],
+        capture_output=True,
+    )
+    # No auto-lock timeout
+    subprocess.run(
+        ["security", "set-keychain-settings", str(keychain_path)],
+        capture_output=True,
+    )
+
+    yield keychain_path
+
+    # Cleanup: delete the test keychain
+    subprocess.run(
+        ["security", "delete-keychain", str(keychain_path)],
+        capture_output=True,
+    )
+
+
+@pytest.fixture()
+def env_with_registry(temp_registry, temp_keychain):
+    """Environment dict with BLINDFOLD_REGISTRY and BLINDFOLD_KEYCHAIN
+    pointing to temp files.
+
+    This keeps tests isolated from the user's real registry and keychain.
     """
     env = os.environ.copy()
     env["BLINDFOLD_REGISTRY"] = str(temp_registry)
+    if temp_keychain is not None:
+        env["BLINDFOLD_KEYCHAIN"] = str(temp_keychain)
     return env
 
 
