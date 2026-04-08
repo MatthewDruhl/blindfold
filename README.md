@@ -126,6 +126,18 @@ Add hooks to `~/.claude/settings.json`:
 - Output redaction is string-based. Secrets shorter than 4 characters won't be redacted.
 - If the process is killed with SIGKILL, temp files with secrets may persist in `/tmp/`. Normal termination cleans them up.
 
+## Known Issues
+
+Found during systematic testing of the original Blindfold (commit 12299fa). See [TESTING.md](TESTING.md) for full methodology and results.
+
+| # | Issue | Severity | Impact |
+|---|-------|----------|--------|
+| [#1](https://github.com/MatthewDruhl/blindfold/issues/1) | `secret-list.sh` crashes if `envProfiles` key missing from registry | Low | Script exits with error on valid registries |
+| [#2](https://github.com/MatthewDruhl/blindfold/issues/2) | Redact hook reads wrong field — leak detection never fires | **High** | Secrets in command output are never detected or warned about |
+| [#3](https://github.com/MatthewDruhl/blindfold/issues/3) | Env file protection bypass — jq `values` bug | **High** | Registered `.env` files can be read freely via Bash and Read tools |
+
+**2 of 3 defense-in-depth security features are broken out of the box.** The guard (blocking direct keychain reads) and secret-exec (placeholder substitution) work correctly.
+
 ## License
 
 MIT
