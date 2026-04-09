@@ -2,7 +2,7 @@
 # Shared functions for Blindfold scripts.
 # Source this file: source "$(dirname "$0")/lib.sh"
 
-REGISTRY="$HOME/.claude/secrets-registry.json"
+REGISTRY="${BLINDFOLD_REGISTRY:-$HOME/.claude/secrets-registry.json}"
 SERVICE="claude-secrets"
 ACCOUNT_PREFIX="claude-secret"
 MIN_REDACT_LENGTH=4
