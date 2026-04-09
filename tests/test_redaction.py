@@ -16,22 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import macos_only, run_script, SCRIPTS_DIR
-
-
-def _build_hook_input(stdout: str, tool_name: str = "Bash") -> str:
-    """Build the JSON input that Claude Code sends to PostToolUse hooks.
-
-    The field is `tool_response` (not `tool_result`) — verified via debug
-    capture of real Claude Code hook input. See TESTING.md line 84 and
-    issue #2.
-    """
-    return json.dumps({
-        "tool_name": tool_name,
-        "tool_response": {
-            "stdout": stdout,
-        },
-    })
+from conftest import build_redact_input, macos_only, run_script, SCRIPTS_DIR
 
 
 def _run_redact_hook(hook_input: str, env: dict) -> subprocess.CompletedProcess:
@@ -87,7 +72,7 @@ class TestRedactionActuallyRedacts:
 
     def test_leaked_secret_is_replaced_in_output(self):
         """If a secret value appears in Bash output, it must be replaced."""
-        hook_input = _build_hook_input(
+        hook_input = build_redact_input(
             f"Response from API: token={self.secret_value} status=200"
         )
         result = _run_redact_hook(hook_input, self.env)
@@ -104,7 +89,7 @@ class TestRedactionActuallyRedacts:
         If a future change reverts to tool_result, the hook will silently
         fail because the stdout will never flow back to Claude Code.
         """
-        hook_input = _build_hook_input(f"leak={self.secret_value}")
+        hook_input = build_redact_input(f"leak={self.secret_value}")
         result = _run_redact_hook(hook_input, self.env)
 
         # Parse stdout as JSON — hook should emit a tool_response object
@@ -118,7 +103,7 @@ class TestRedactionActuallyRedacts:
 
     def test_redacted_output_contains_placeholder(self):
         """Redacted output should show [REDACTED:NAME] instead of the value."""
-        hook_input = _build_hook_input(
+        hook_input = build_redact_input(
             f"key={self.secret_value}"
         )
         result = _run_redact_hook(hook_input, self.env)
@@ -131,7 +116,7 @@ class TestRedactionActuallyRedacts:
 
     def test_multiple_occurrences_all_redacted(self):
         """Every occurrence of the secret in output should be replaced."""
-        hook_input = _build_hook_input(
+        hook_input = build_redact_input(
             f"first={self.secret_value} middle=ok last={self.secret_value}"
         )
         result = _run_redact_hook(hook_input, self.env)
@@ -143,7 +128,7 @@ class TestRedactionActuallyRedacts:
 
     def test_non_bash_tool_is_ignored(self):
         """Redaction hook should only process Bash tool output."""
-        hook_input = _build_hook_input(
+        hook_input = build_redact_input(
             f"value={self.secret_value}",
             tool_name="Read",
         )
@@ -153,7 +138,7 @@ class TestRedactionActuallyRedacts:
 
     def test_output_without_secrets_passes_through(self):
         """Output that doesn't contain secrets should not be modified."""
-        hook_input = _build_hook_input("normal output with no secrets")
+        hook_input = build_redact_input("normal output with no secrets")
         result = _run_redact_hook(hook_input, self.env)
         assert result.returncode == 0
         # No warning should be emitted

@@ -153,3 +153,28 @@ security delete-generic-password -a "claude-secret:global:BLINDFOLD_TEST" -s "cl
 rm .env.test
 echo '{"version":3,"global":{"secrets":[],"envProfiles":{}},"projects":{}}' > ~/.claude/secrets-registry.json
 ```
+
+---
+
+## Phase 2 — Automation Status
+
+The Phase 2 manual suite has been partially automated in `tests/test_phase2_integration.py`.
+
+| Test | Description | Automation Status |
+|------|-------------|-------------------|
+| 2.1 | Hook loads and wraps benign commands | **Automated** — `TestGuardHookBasics` (3 tests) |
+| 2.2 | Guard blocks `find-generic-password` | **Automated** — `TestSandboxBlocksKeychainRead` |
+| 2.3 | Guard blocks `dump-keychain` | **Automated** — `TestSandboxBlocksKeychainDump` |
+| 2.4 | Guard allows safe security command | **Automated** — `TestSandboxAllowsSafeCommand` |
+| 2.5 | secret-list envProfiles | **Obsolete** — env-profile feature removed in commit `94a7a83` |
+| 2.6 | secret-exec placeholder + redaction | **Automated** — `TestSecretExecPlaceholder` |
+| 2.7 | Redact hook fires on leaked output | **Automated** — `TestRedactHookFiresOnLeak` (regression for Bug #2) |
+| 2.8 | Guard blocks `cat .env` | **Obsolete** — env-profile feature removed in commit `94a7a83` |
+| 2.9 | Guard blocks Read on `.env` | **Obsolete** — env-profile feature removed in commit `94a7a83` |
+
+All automated tests are macOS-only (they require Seatbelt sandbox and macOS Keychain) and are marked with `@macos_only`. They run in CI on the macOS GitHub Actions runner.
+
+Run the suite:
+```bash
+uv run --with pytest pytest tests/test_phase2_integration.py -v
+```
