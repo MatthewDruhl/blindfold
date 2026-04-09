@@ -4,6 +4,12 @@ Tests call bash scripts via subprocess to validate the full pipeline.
 Two tiers:
   - Unit tests: run anywhere, test argument parsing, registry logic, etc.
   - Integration tests: macOS only, test Keychain store/retrieve/delete cycle.
+
+Hook input builders (`build_guard_input`, `build_redact_input`) produce
+JSON that matches the real Claude Code hook schema. Tests should use
+these rather than rolling their own dicts — this is how issue #2 hid
+(the original test mock used the wrong field name, perpetuating the bug).
+See issue #12 for the test hygiene audit.
 """
 
 import json
@@ -124,3 +130,36 @@ def run_script(script_name: str, args: list[str] | None = None,
         input=input_text,
         timeout=30,
     )
+
+
+# ---------------------------------------------------------------------------
+# Canonical hook input builders — keep in sync with Claude Code hook schema.
+# ---------------------------------------------------------------------------
+
+def build_guard_input(command: str, tool_name: str = "Bash") -> str:
+    """Build PreToolUse hook input JSON (for secret-guard.sh).
+
+    Schema verified against `scripts/secret-guard.sh:12`:
+        jq -r '[.tool_name // "", .tool_input.command // ""] | @tsv'
+    """
+    return json.dumps({
+        "tool_name": tool_name,
+        "tool_input": {
+            "command": command,
+        },
+    })
+
+
+def build_redact_input(stdout: str, tool_name: str = "Bash") -> str:
+    """Build PostToolUse hook input JSON (for secret-redact.sh).
+
+    Schema verified via debug capture of real Claude Code hook input
+    (TESTING.md line 84). The field is `tool_response`, NOT `tool_result`
+    — see issue #2 for the bug where this was wrong.
+    """
+    return json.dumps({
+        "tool_name": tool_name,
+        "tool_response": {
+            "stdout": stdout,
+        },
+    })
