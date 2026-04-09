@@ -9,7 +9,6 @@ but a safety cleanup runs at the start of each test as well.
 """
 
 import json
-import os
 import subprocess
 
 import pytest
@@ -18,16 +17,6 @@ from conftest import macos_only, run_script
 
 # Use a distinct service name to avoid colliding with real secrets
 TEST_SERVICE = "claude-secrets"
-TEST_ACCOUNT_PREFIX = "claude-secret:global:BFTEST_"
-
-
-def _keychain_cleanup(name: str) -> None:
-    """Remove a test secret from Keychain, ignoring errors."""
-    account = f"claude-secret:global:{name}"
-    subprocess.run(
-        ["security", "delete-generic-password", "-a", account, "-s", TEST_SERVICE],
-        capture_output=True,
-    )
 
 
 @macos_only
@@ -35,40 +24,33 @@ class TestKeychainLifecycle:
     """Full store → retrieve → list → delete lifecycle on macOS Keychain."""
 
     @pytest.fixture(autouse=True)
-    def _cleanup(self, env_with_registry):
-        """Clean up test secrets before and after each test."""
+    def _setup(self, env_with_registry, temp_keychain):
+        """Set up test environment with isolated keychain."""
         self.env = env_with_registry
-        names = ["BFTEST_STORE", "BFTEST_LIFECYCLE", "BFTEST_OVERWRITE"]
-        for name in names:
-            _keychain_cleanup(name)
+        self.keychain = str(temp_keychain)
         yield
-        for name in names:
-            _keychain_cleanup(name)
 
     def _store_secret(self, name: str, value: str) -> subprocess.CompletedProcess:
-        """Store a secret by calling secret-store.sh with terminal input."""
-        # Use --register-only first, then store directly via security command
-        # because secret-store.sh uses GUI dialog which we can't automate
+        """Store a secret using isolated test keychain."""
         run_script(
             "secret-store.sh",
             ["--register-only", name],
             env=self.env,
         )
-        # Store directly in Keychain (bypassing the dialog)
         account = f"claude-secret:global:{name}"
         result = subprocess.run(
             ["security", "add-generic-password",
-             "-a", account, "-s", TEST_SERVICE, "-w", value],
+             "-a", account, "-s", TEST_SERVICE, "-w", value, self.keychain],
             capture_output=True, text=True,
         )
         return result
 
     def _get_secret(self, name: str) -> str | None:
-        """Retrieve a secret directly from Keychain."""
+        """Retrieve a secret from the isolated test keychain."""
         account = f"claude-secret:global:{name}"
         result = subprocess.run(
             ["security", "find-generic-password",
-             "-a", account, "-s", TEST_SERVICE, "-w"],
+             "-a", account, "-s", TEST_SERVICE, "-w", self.keychain],
             capture_output=True, text=True,
         )
         if result.returncode == 0:
@@ -114,7 +96,12 @@ class TestKeychainLifecycle:
         self._store_secret("BFTEST_OVERWRITE", "original-value")
         assert self._get_secret("BFTEST_OVERWRITE") == "original-value"
 
-        # Overwrite — need to delete first since macOS security won't update
-        _keychain_cleanup("BFTEST_OVERWRITE")
+        # Overwrite — delete from test keychain first, then re-store
+        account = f"claude-secret:global:BFTEST_OVERWRITE"
+        subprocess.run(
+            ["security", "delete-generic-password",
+             "-a", account, "-s", TEST_SERVICE, self.keychain],
+            capture_output=True,
+        )
         self._store_secret("BFTEST_OVERWRITE", "updated-value")
         assert self._get_secret("BFTEST_OVERWRITE") == "updated-value"
