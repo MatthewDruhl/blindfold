@@ -16,9 +16,9 @@ This document describes Blindfold's security architecture, threat model, known l
      │                           ▼                           ▼
      │                    Blocks keychain              Scans output for
      │                    access from inside           leaked secret values.
-     │                    sandboxed commands.           Replaces with
-     │                    macOS: Seatbelt              [REDACTED:NAME]
-     │                    Linux: string match          before Claude sees it.
+     │                    sandboxed commands.           Warns Claude via
+     │                    macOS: Seatbelt              systemMessage to
+     │                    Linux: string match          disregard them.
      │                           │
      ▼                           ▼
  OS Keychain              secret-exec.sh
@@ -42,7 +42,7 @@ This document describes Blindfold's security architecture, threat model, known l
 | **Store** | `secret-store.sh` | Prompts for value via native OS dialog, stores in keychain, registers in JSON registry |
 | **Guard** | `secret-guard.sh` | PreToolUse hook. On macOS, wraps every Bash command in Seatbelt sandbox blocking keychain access |
 | **Execute** | `secret-exec.sh` | Resolves `{{PLACEHOLDER}}` syntax, injects secrets as env vars, runs command in sandbox, redacts output |
-| **Redact** | `secret-redact.sh` | PostToolUse hook. Scans Bash output for leaked secret values, replaces with `[REDACTED:NAME]` |
+| **Redact** | `secret-redact.sh` | PostToolUse hook. Scans Bash output for leaked secret values, warns Claude via `systemMessage` to disregard them |
 | **List** | `secret-list.sh` | Shows registered secrets with backend status (never shows values) |
 | **Delete** | `secret-delete.sh` | Removes from keychain and registry |
 | **Library** | `lib.sh` | Shared functions: backend detection, keychain operations, registry management, sandboxing |
@@ -56,7 +56,7 @@ This document describes Blindfold's security architecture, threat model, known l
 |--------|-----------|-----------|
 | LLM seeing raw secret values | Secrets stored in OS keychain, LLM works with `{{PLACEHOLDER}}` references | `secret-store.sh`, `secret-exec.sh` |
 | Sandboxed commands accessing keychain | Seatbelt sandbox blocks keychain Mach IPC at kernel level | `sandbox.sb`, `secret-guard.sh` |
-| Secret values in command output | PostToolUse hook replaces values with `[REDACTED:NAME]` | `secret-redact.sh` |
+| Secret values in command output | PostToolUse hook detects leaked values and emits a `systemMessage` warning instructing Claude to disregard them. Note: Claude Code does not support output replacement for built-in tools, so the raw value may still appear in context. | `secret-redact.sh` |
 | Obfuscated keychain access attempts | Seatbelt operates at Mach IPC level, not string matching (macOS) | `sandbox.sb` |
 | Secret registry tampering | Atomic updates via temp file + `jq` validation + `mv` | `lib.sh:update_registry()` |
 
@@ -131,7 +131,7 @@ With zero secrets registered, the hooks exit quickly. With many secrets, there i
 |---------|-------------|-----------|-----------------|---------------|
 | **Cost** | Free | Free | Free (dev) / Paid (enterprise) | $2.99+/mo |
 | **LLM-aware** | No -- LLM reads `.env` directly | Yes -- LLM sees `{{PLACEHOLDER}}` only | No | No |
-| **Output redaction** | No | Yes (PostToolUse hook) | No | No |
+| **Output redaction** | No | Detection + warning (PostToolUse hook) | No | No |
 | **Sandbox isolation** | No | Yes (macOS Seatbelt) | N/A (server-side) | No |
 | **Secret backend** | Plaintext file | OS keychain | Encrypted server | Encrypted vault |
 | **Setup complexity** | Trivial | Low (plugin install) | High (server + auth) | Medium (CLI + account) |
